@@ -1,0 +1,1166 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <title>Project Aetheria RTX :: Merged PBR Path Tracing</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <style>
+        html, body { margin: 0; padding: 0; overflow: hidden; background: #000; }
+        canvas#rtx-canvas { display: block; width: 100vw; height: 100vh; cursor: none; image-rendering: pixelated; image-rendering: crisp-edges; }
+        .hud { position: fixed; bottom: 10px; left: 10px; color: #fff; font-family: Consolas, "Lucida Console", monospace; font-size: 14px; text-shadow: 2px 2px 4px #000; pointer-events: none; user-select: none; z-index: 10; line-height: 1.5; white-space: pre; }
+        .crosshair { position: fixed; top: 50%; left: 50%; width: 4px; height: 4px; background-color: rgba(255,255,255,0.5); border: 1px solid rgba(0,0,0,0.5); transform: translate(-50%, -50%); pointer-events: none; z-index: 10; }
+        .breaking-indicator { position: fixed; top: 50%; left: 50%; width: 24px; height: 24px; border: 2px solid rgba(255,255,255,0.7); border-radius: 50%; transform: translate(-50%, -50%) scale(0); opacity: 0; pointer-events: none; z-index: 11; clip-path: polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%); }
+        #settingsPanel { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 4px; font-size: 12px; color: #eee; display: flex; flex-direction: column; gap: 5px; z-index: 20; pointer-events: auto; font-family: Consolas, "Lucida Console", monospace; }
+        #settingsPanel label, #settingsPanel select, #settingsPanel input { display: block; margin-bottom: 3px; }
+        #settingsPanel input[type="range"] { vertical-align: middle; }
+        #settingsPanel span { vertical-align: middle; display: inline-block; min-width: 25px; text-align: right; margin-left: 5px; }
+        #settingsPanel button { margin-top: 5px; }
+        .loader { position: absolute; top: 50%; left: 50%; border: 8px solid #f3f3f3; border-radius: 50%; border-top: 8px solid #3498db; width: 60px; height: 60px; animation: spin 1s linear infinite; transform: translate(-50%, -50%); z-index: 10; display: none; }
+        @keyframes spin { 0% { transform: translate(-50%, -50%) rotate(0deg); } 100% { transform: translate(-50%, -50%) rotate(360deg); } }
+        #infoPanel { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.6); padding: 6px 8px; border-radius: 4px; font-size: 12px; color: #eee; z-index: 20; font-family: Consolas, "Lucida Console", monospace; }
+    </style>
+</head>
+<body>
+    <div class="loader" id="loader"></div>
+    <canvas id="rtx-canvas"></canvas>
+    <div id="infoPanel">Сэмплы: <span id="frameCountDisplay">0</span> | FPS: <span id="fpsDisplay">N/A</span></div>
+    <div id="settingsPanel">
+        <div> <label for="qualitySelect">Качество (отскоки):</label> <select id="qualitySelect"> <option value="low">Низкое (3)</option> <option value="medium" selected>Среднее (5)</option> <option value="high">Высокое (8)</option> <option value="ultra">Ультра (12)</option> </select> </div>
+        <div> <label for="resSelect">Разрешение:</label> <select id="resSelect"> <option value="0.33">33%</option> <option value="0.5" selected>50%</option> <option value="1">100%</option> </select> </div>
+        <div> <label for="dofToggle">Глубина резкости:</label> <input type="checkbox" id="dofToggle" checked> </div>
+        <div> <label for="focusDistance">Фокус:</label> <input type="range" id="focusDistance" min="1" max="50" step="0.1" value="8.0"> <span id="focusDistanceValue">8.0</span> </div>
+        <div> <label for="aperture">Апертура:</label> <input type="range" id="aperture" min="0" max="0.3" step="0.005" value="0.04"> <span id="apertureValue">0.04</span> </div>
+    </div>
+    <div class="hud" id="hud-info">Initializing...</div>
+    <div class="crosshair"></div>
+    <div class="breaking-indicator" id="breaking-indicator"></div>
+
+    <!-- WORKER: генерация чанков (из оригинальной игры) -->
+    <script id="worker-script" type="javascript/worker">
+        const grad3 = [[1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],[1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],[0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]];
+        const p_worker = [151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54,65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180];
+        const perm_worker = new Uint8Array(512);
+        const permMod12_worker = new Uint8Array(512);
+        (function(){for(let i=0;i<512;i++){perm_worker[i]=p_worker[i&255];permMod12_worker[i]=perm_worker[i]%12;}})();
+        const simplex3D = (xin, yin, zin) => { const F3=1/3, G3=1/6; let n0,n1,n2,n3; let s=(xin+yin+zin)*F3; let i=Math.floor(xin+s), j=Math.floor(yin+s), k=Math.floor(zin+s); let t=(i+j+k)*G3; let X0=i-t, Y0=j-t, Z0=k-t; let x0=xin-X0, y0=yin-Y0, z0=zin-Z0; let i1,j1,k1,i2,j2,k2; if (x0>=y0){if(y0>=z0){i1=1;j1=0;k1=0;i2=1;j2=1;k2=0;} else if (x0>=z0){i1=1;j1=0;k1=0;i2=1;j2=0;k2=1;} else {i1=0;j1=0;k1=1;i2=1;j2=0;k2=1;}} else {if (y0<z0){i1=0;j1=0;k1=1;i2=0;j2=1;k2=1;} else if (x0<z0){i1=0;j1=1;k1=0;i2=0;j2=1;k2=1;} else {i1=0;j1=1;k1=0;i2=1;j2=1;k2=0;}} let x1=x0-i1+G3, y1=y0-j1+G3, z1=z0-k1+G3; let x2=x0-i2+2*G3, y2=y0-j2+2*G3, z2=z0-k2+2*G3; let x3=x0-1+3*G3, y3=y0-1+3*G3, z3=z0-1+3*G3; let ii=i&255, jj=j&255, kk=k&255; let gi0=permMod12_worker[ii+perm_worker[jj+perm_worker[kk]]]; let gi1=permMod12_worker[ii+i1+perm_worker[jj+j1+perm_worker[kk+k1]]]; let gi2=permMod12_worker[ii+i2+perm_worker[jj+j2+perm_worker[kk+k2]]]; let gi3=permMod12_worker[ii+1+perm_worker[jj+1+perm_worker[kk+1]]]; let t0=0.6-x0*x0-y0*y0-z0*z0; if(t0<0)n0=0; else{t0*=t0;n0=t0*t0*(grad3[gi0][0]*x0+grad3[gi0][1]*y0+grad3[gi0][2]*z0);} let t1=0.6-x1*x1-y1*y1-z1*z1; if(t1<0)n1=0; else{t1*=t1;n1=t1*t1*(grad3[gi1][0]*x1+grad3[gi1][1]*y1+grad3[gi1][2]*z1);} let t2=0.6-x2*x2-y2*y2-z2*z2; if(t2<0)n2=0; else{t2*=t2;n2=t2*t2*(grad3[gi2][0]*x2+grad3[gi2][1]*y2+grad3[gi2][2]*z2);} let t3=0.6-x3*x3-y3*y3-z3*z3; if(t3<0)n3=0; else{t3*=t3;n3=t3*t3*(grad3[gi3][0]*x3+grad3[gi3][1]*y3+grad3[gi3][2]*z3);} return 32*(n0+n1+n2+n3); };
+        function fbm3D(x, y, z, octaves, persistence, lacunarity, scale){ let total=0, freq=1, amp=1, maxV=0; for(let i=0;i<octaves;i++){ total += simplex3D(x*freq*scale, y*freq*scale, z*freq*scale) * amp; maxV += amp; amp *= persistence; freq *= lacunarity; } return total / maxV; }
+        let CONFIG;
+        let VoxelRegistryData;
+        self.onmessage = function(e){
+            const { type, payload } = e.data;
+            if (type==='init'){ CONFIG = payload.CONFIG; VoxelRegistryData = payload.VoxelRegistryData; return; }
+            if (type==='generate'){
+                const { cx, cz, worldPos, size } = payload;
+                const data = new Uint8Array(size[0]*size[1]*size[2]);
+                const getIndex = (x,y,z)=> x + z*size[0] + y*size[0]*size[2];
+                const get = (x,y,z)=> data[getIndex(x,y,z)];
+                const set = (x,y,z,id)=> data[getIndex(x,y,z)] = id;
+                for(let x=0;x<size[0];x++){
+                    for(let z=0;z<size[2];z++){
+                        const wx = worldPos[0] + x;
+                        const wz = worldPos[2] + z;
+                        const biomeNoise = (simplex3D(wx*0.001, wz*0.001, 0)+1)/2;
+                        const isDesert = biomeNoise > 0.6;
+                        const baseHeight = fbm3D(wx, 0, wz, 5, 0.5, 2.0, 1/400)*40 + 55;
+                        const detailHeight = fbm3D(wx, 0, wz, 3, 0.4, 2.5, 1/80)*10;
+                        const height = Math.floor(baseHeight + detailHeight);
+                        for(let y=0;y<size[1];y++){
+                            let voxelID = VoxelRegistryData.Aetheria;
+                            if (y===0) voxelID = VoxelRegistryData.Bedrock;
+                            else if (y>height) {
+                                if (y<=CONFIG.WATER_LEVEL) voxelID = VoxelRegistryData.AquaFluens;
+                            } else {
+                                const caveNoise = fbm3D(wx, y, wz, 4, 0.6, 2.1, 1/70);
+                                if (caveNoise>0.65 && y<height-5){
+                                    if (y<15 && Math.random()<0.15) voxelID = VoxelRegistryData.MagmaFlux;
+                                    else if (Math.random()<0.02) voxelID = VoxelRegistryData.LuxCrystal;
+                                    else voxelID = VoxelRegistryData.Aetheria;
+                                } else {
+                                    if (y===height) voxelID = isDesert ? VoxelRegistryData.Sand : VoxelRegistryData.Grass;
+                                    else if (y>height-5) voxelID = isDesert ? VoxelRegistryData.Sandstone : VoxelRegistryData.TerraSolida;
+                                    else {
+                                        voxelID = VoxelRegistryData.Lithos;
+                                        if (y<64 && Math.random()<0.008) voxelID = VoxelRegistryData.COAL_ORE;
+                                        if (y<48 && Math.random()<0.005) voxelID = VoxelRegistryData.IRON_ORE;
+                                    }
+                                }
+                            }
+                            set(x,y,z,voxelID);
+                        }
+                    }
+                }
+                for(let x=2;x<size[0]-2;x++){
+                    for(let z=2;z<size[2]-2;z++){
+                        const wx = worldPos[0] + x;
+                        const wz = worldPos[2] + z;
+                        const biomeNoise = (simplex3D(wx*0.001, wz*0.001, 0)+1)/2;
+                        const isDesert = biomeNoise > 0.6;
+                        if (Math.random() > 0.99){
+                            for(let y=CONFIG.CHUNK_HEIGHT-1; y>CONFIG.WATER_LEVEL; y--){
+                                const ground = get(x,y,z);
+                                if ((!isDesert && ground===VoxelRegistryData.Grass) || (isDesert && ground===VoxelRegistryData.Sand)){
+                                    if (isDesert){
+                                        const h = 2 + Math.floor(Math.random()*2);
+                                        for(let i=0;i<h;i++) if (y+1+i < CONFIG.CHUNK_HEIGHT) set(x,y+1+i,z,VoxelRegistryData.Cactus);
+                                    } else {
+                                        const h = 5 + Math.floor(Math.random()*3);
+                                        for(let i=0;i<h;i++) if (y+1+i < CONFIG.CHUNK_HEIGHT) set(x,y+1+i,z,VoxelRegistryData.Lignum);
+                                        const radius = 3;
+                                        for(let ly=y+1+h-2; ly<y+1+h+2; ly++){
+                                            for(let lx=x-radius; lx<=x+radius; lx++){
+                                                for(let lz=z-radius; lz<=z+radius; lz++){
+                                                    const dist = Math.sqrt((lx-x)**2 + (ly-(y+1+h-1))**2 * 1.5 + (lz-z)**2);
+                                                    if (dist<radius && lx>=0 && lx<size[0] && ly>=0 && ly<size[1] && lz>=0 && lz<size[2] && get(lx,ly,lz)===VoxelRegistryData.Aetheria){
+                                                        set(lx,ly,lz,VoxelRegistryData.Folia);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                self.postMessage({ type:'generated', cx, cz, data }, [data.buffer]);
+            }
+        };
+    </script>
+    
+    <script type="module">
+        // ===========================
+        // Core Math & Game Logic (из оригинальной игры)
+        // ===========================
+        const Mat4 = { create: () => new Float32Array(16), identity: (out) => { out[0]=1;out[1]=0;out[2]=0;out[3]=0; out[4]=0;out[5]=1;out[6]=0;out[7]=0; out[8]=0;out[9]=0;out[10]=1;out[11]=0; out[12]=0;out[13]=0;out[14]=0;out[15]=1; return out; }, fromTranslation: (out, v) => { Mat4.identity(out); out[12]=v[0]; out[13]=v[1]; out[14]=v[2]; return out; }, perspective: (out, fovy, aspect, near, far) => { const f = 1.0 / Math.tan(fovy/2); out[0]=f/aspect; out[1]=0; out[2]=0; out[3]=0; out[4]=0; out[5]=f; out[6]=0; out[7]=0; out[8]=0; out[9]=0; out[10]=(far+near)/(near-far); out[11]=-1; out[12]=0; out[13]=0; out[14]=(2*far*near)/(near-far); out[15]=0; return out; } };
+        const Quat = { create: () => { const q=new Float32Array(4); q[3]=1; return q; }, setAxisAngle: (out, axis, rad) => { const s=Math.sin(rad*0.5); out[0]=axis[0]*s; out[1]=axis[1]*s; out[2]=axis[2]*s; out[3]=Math.cos(rad*0.5); return out; }, multiply: (out, a,b) => { const ax=a[0],ay=a[1],az=a[2],aw=a[3], bx=b[0],by=b[1],bz=b[2],bw=b[3]; out[0]=ax*bw+aw*bx+ay*bz-az*by; out[1]=ay*bw+aw*by+az*bx-ax*bz; out[2]=az*bw+aw*bz+ax*by-ay*bx; out[3]=aw*bw-ax*bx-ay*by-az*bz; return out; }, normalize: (out,a)=>{ let l=Math.hypot(a[0],a[1],a[2],a[3]); if(l>1e-6){l=1/l; out[0]=a[0]*l; out[1]=a[1]*l; out[2]=a[2]*l; out[3]=a[3]*l;} return out; }, conjugate: (out,a)=>{ out[0]=-a[0]; out[1]=-a[1]; out[2]=-a[2]; out[3]=a[3]; return out; }, equals:(a,b)=> a[0]===b[0] && a[1]===b[1] && a[2]===b[2] && a[3]===b[3] };
+        const Vec3 = { create: () => new Float32Array(3), transformQuat: (out, a, q) => { let qx=q[0], qy=q[1], qz=q[2], qw=q[3]; let x=a[0], y=a[1], z=a[2]; let uvx=qy*z-qz*y, uvy=qz*x-qx*z, uvz=qx*y-qy*x; let uuvx=qy*uvz-qz*uvy, uuvy=qz*uvx-qx*uvz, uuvz=qx*uvy-qy*uvx; uvx*=2*qw; uvy*=2*qw; uvz*=2*qw; uuvx*=2; uuvy*=2; uuvz*=2; out[0]=x+uvx+uuvx; out[1]=y+uvy+uuvy; out[2]=z+uvz+uuvz; return out; }, normalize: (out,a)=>{ const l=Math.hypot(a[0],a[1],a[2]); if(l>1e-6){out[0]=a[0]/l;out[1]=a[1]/l;out[2]=a[2]/l;} else {out[0]=out[1]=out[2]=0;} return out; }, equals:(a,b)=> a[0]===b[0] && a[1]===b[1] && a[2]===b[2] };
+        
+        const CONFIG = { SEED: Date.now(), CHUNK_SIZE: 32, CHUNK_HEIGHT: 128, WATER_LEVEL: 48, RENDER_DISTANCE: 6, DAY_CYCLE_DURATION: 600 };
+        document.title = document.title + ` [${CONFIG.SEED}]`;
+        
+        const ToolTier = { NONE:0, WOOD:1, STONE:2, IRON:3, DIAMOND:4 };
+        const ToolType = { AXE:1, PICKAXE:2, SHOVEL:3 };
+        const VoxelRegistry = { _map:new Map(), _idCounter:0, _data:{}, register(name, props){ const id=this._idCounter++; const p={ id, name, solid:false, transparent:false, breakTime:1.0, unbreakable:false, isBlock:true, luminance:0, ...props }; this._map.set(id,p); this[name]=id; this._data[name]=id; return id; }, get(id){ return this._map.get(id); } };
+        const ItemRegistry = { _map:new Map(), _idCounter:0, register(name, props){ const id=VoxelRegistry._idCounter + this._idCounter++; const p={ id, name, isBlock:false, ...props }; VoxelRegistry._map.set(id,p); this[name]=id; return id; }, get(id){ return VoxelRegistry.get(id); } };
+        
+        const Aetheria = VoxelRegistry.register('Aetheria', { transparent:true, breakTime:0 });
+        const Lithos = VoxelRegistry.register('Lithos', { solid:true, breakTime:2.0, requiredTool:ToolType.PICKAXE });
+        const TerraSolida= VoxelRegistry.register('TerraSolida',{ solid:true, breakTime:0.8, requiredTool:ToolType.SHOVEL });
+        const Grass = VoxelRegistry.register('Grass', { solid:true, breakTime:0.9, requiredTool:ToolType.SHOVEL });
+        const Sand = VoxelRegistry.register('Sand', { solid:true, breakTime:0.7, requiredTool:ToolType.SHOVEL });
+        const Sandstone = VoxelRegistry.register('Sandstone', { solid:true, breakTime:2.0, requiredTool:ToolType.PICKAXE });
+        const Lignum = VoxelRegistry.register('Lignum', { solid:true, breakTime:2.5, requiredTool:ToolType.AXE });
+        const Folia = VoxelRegistry.register('Folia', { solid:true, transparent:true, breakTime:0.5 });
+        const Cactus = VoxelRegistry.register('Cactus', { solid:true, transparent:true, breakTime:0.6 });
+        const Bedrock = VoxelRegistry.register('Bedrock', { solid:true, breakTime:9999, unbreakable:true });
+        const AquaFluens = VoxelRegistry.register('AquaFluens', { transparent:true, liquid:true, breakTime:0, luminance:0 });
+        const MagmaFlux = VoxelRegistry.register('MagmaFlux', { transparent:true, liquid:true, luminance:12, breakTime:0 });
+        const LuxCrystal = VoxelRegistry.register('LuxCrystal', { solid:true, luminance:15, breakTime:3.0 });
+        const COAL_ORE = VoxelRegistry.register('COAL_ORE', { solid:true, breakTime:2.5, requiredTool:ToolType.PICKAXE });
+        const IRON_ORE = VoxelRegistry.register('IRON_ORE', { solid:true, breakTime:3.5, requiredTool:ToolType.PICKAXE });
+        
+        const WOODEN_PICKAXE = ItemRegistry.register('WOODEN_PICKAXE', { toolType:ToolType.PICKAXE, toolTier:ToolTier.WOOD, isBlock:false });
+        const STONE_PICKAXE = ItemRegistry.register('STONE_PICKAXE', { toolType:ToolType.PICKAXE, toolTier:ToolTier.STONE, isBlock:false });
+        
+        class World {
+            constructor(worker){ this.chunks = new Map(); this.time = 0; this.worker = worker; this.renderer = null; this.worker.onmessage = (e)=>{ const { type, cx, cz, data } = e.data; if (type==='generated'){ const chunk = this.getChunk(cx, 0, cz, false); if (chunk){ chunk.data.set(data); chunk.generating = false; if (this.renderer) this.renderer.updateChunkRegionInVolume(chunk); } } }; }
+            setRenderer(r){ this.renderer = r; }
+            getVoxel(x, y, z){ if (y < 0) return Bedrock; if (y >= CONFIG.CHUNK_HEIGHT) return Aetheria; const cX = Math.floor(x/CONFIG.CHUNK_SIZE), cZ = Math.floor(z/CONFIG.CHUNK_SIZE); const chunk = this.getChunk(cX, 0, cZ, false); if (!chunk || chunk.generating) return Aetheria; return chunk.get(x - cX*CONFIG.CHUNK_SIZE, y, z - cZ*CONFIG.CHUNK_SIZE); }
+            setVoxel(x, y, z, id){ if (y<0 || y>=CONFIG.CHUNK_HEIGHT) return; const cX = Math.floor(x/CONFIG.CHUNK_SIZE), cZ = Math.floor(z/CONFIG.CHUNK_SIZE); const chunk = this.getChunk(cX, 0, cZ, false); if (!chunk) return; chunk.set(x - cX*CONFIG.CHUNK_SIZE, y, z - cZ*CONFIG.CHUNK_SIZE, id); if (this.renderer) this.renderer.updateSingleVoxelInVolume(x,y,z,id); }
+            getChunk(cx, cy, cz, generate=true){ const key = `${cx},${cy},${cz}`; if (this.chunks.has(key)) return this.chunks.get(key); if (!generate) return null; const chunk = new Chunk(this, cx, cy, cz); this.chunks.set(key, chunk); this.worker.postMessage({ type:'generate', payload:{ cx, cz, worldPos:chunk.worldPos, size:chunk.size } }); return chunk; }
+            *iterateChunksInRange(x0,z0,x1,z1){ const minCX = Math.floor(x0/CONFIG.CHUNK_SIZE), maxCX = Math.floor((x1-1)/CONFIG.CHUNK_SIZE); const minCZ = Math.floor(z0/CONFIG.CHUNK_SIZE), maxCZ = Math.floor((z1-1)/CONFIG.CHUNK_SIZE); for (let cz=minCZ; cz<=maxCZ; cz++){ for (let cx=minCX; cx<=maxCX; cx++){ yield this.getChunk(cx,0,cz,true); } } }
+            update(dt){ this.time += dt; }
+        }
+        class Chunk {
+            constructor(world, x, y, z){ this.world = world; this.pos = [x,y,z]; this.worldPos = [x*CONFIG.CHUNK_SIZE, 0, z*CONFIG.CHUNK_SIZE]; this.size = [CONFIG.CHUNK_SIZE, CONFIG.CHUNK_HEIGHT, CONFIG.CHUNK_SIZE]; this.data = new Uint8Array(this.size[0]*this.size[1]*this.size[2]); this.generating = true; }
+            getIndex(x,y,z){ return x + z*this.size[0] + y*this.size[0]*this.size[2]; }
+            get(x,y,z){ return this.data[this.getIndex(x,y,z)]; }
+            set(x,y,z,id){ this.data[this.getIndex(x,y,z)] = id; }
+        }
+        
+        // --- НАЧАЛО БЛОКА ИСПРАВЛЕНИЯ КОЛЛИЗИЙ (ЗАМЕНИТЬ ВЕСЬ КЛАСС PLAYER) ---
+                class Player {
+            constructor(world){
+                this.world = world;
+                this.position = new Float32Array([CONFIG.CHUNK_SIZE/2, 100, CONFIG.CHUNK_SIZE/2]);
+                this.velocity = new Float32Array([0,0,0]);
+                this.rotation = Quat.create();
+                this.pitch = 0;
+                this.yaw = 0;
+                this.onGround = false;
+                this.width=0.6;
+                this.height=1.8;
+                this.eyeHeight=1.6;
+                this.walkSpeed=4.3;
+                this.sprintSpeed=7.0;
+                this.accelGround=40.0;
+                this.accelAir=15.0;
+                this.frictionGround=10.0;
+                this.jumpImpulse=7.0;
+                this.gravity=-22.0;
+                this.terminalVelocity=-60.0;
+                this.health=20;
+                this.maxHealth=20;
+                this.fallDistance=0;
+                this.hotbar=[WOODEN_PICKAXE, STONE_PICKAXE, Lithos, TerraSolida, Lignum, Sand, LuxCrystal, Folia];
+                this.selectedHotbarIndex=0;
+                this.snapToGround();
+            }
+            getSelectedItem(){ return ItemRegistry.get(this.hotbar[this.selectedHotbarIndex]); }
+            getEyePosition(){ return [this.position[0], this.position[1] + this.eyeHeight, this.position[2]]; }
+            getForwardVector(){ return Vec3.transformQuat(Vec3.create(), [0, 0, -1], this.rotation); }
+            getRightVector(){ return Vec3.transformQuat(Vec3.create(), [1, 0, 0], this.rotation); }
+            snapToGround(){
+                const x = Math.floor(this.position[0]), z = Math.floor(this.position[2]);
+                for (let y=CONFIG.CHUNK_HEIGHT-2; y>=0; y--){
+                    const v = VoxelRegistry.get(this.world.getVoxel(x,y,z));
+                    if (v && v.solid){
+                        this.position[1] = y + 1.0001;
+                        this.onGround = true;
+                        return;
+                    }
+                }
+            }
+            update(dt, input){
+                this.yaw -= input.dx * input.mouseSensitivity;
+                this.pitch -= input.dy * input.mouseSensitivity;
+                this.pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, this.pitch));
+                const qYaw = Quat.setAxisAngle(Quat.create(), [0,1,0], this.yaw);
+                const qPitch = Quat.setAxisAngle(Quat.create(), [1,0,0], this.pitch);
+                Quat.multiply(this.rotation, qYaw, qPitch);
+                Quat.normalize(this.rotation, this.rotation);
+                
+                const moveDir = [0,0,0];
+                if (input.keys.forward) moveDir[2] += 1;
+                if (input.keys.backward) moveDir[2] -= 1;
+                if (input.keys.left) moveDir[0] -= 1;
+                if (input.keys.right) moveDir[0] += 1;
+                
+                const forward = this.getForwardVector(), right = this.getRightVector();
+                forward[1]=0; right[1]=0;
+                Vec3.normalize(forward,forward); Vec3.normalize(right,right);
+                
+                const wish=[0,0,0];
+                wish[0] = forward[0]*moveDir[2] + right[0]*moveDir[0];
+                wish[2] = forward[2]*moveDir[2] + right[2]*moveDir[0];
+                const wishLen=Math.hypot(wish[0],wish[2]);
+                if (wishLen>1e-6){ wish[0]/=wishLen; wish[2]/=wishLen; }
+                
+                const maxSpeed = input.keys.sprint ? this.sprintSpeed : this.walkSpeed;
+                const accel = this.onGround ? this.accelGround : this.accelAir;
+                
+                const targetVX=wish[0]*maxSpeed, targetVZ=wish[2]*maxSpeed;
+                const dvx=targetVX - this.velocity[0], dvz=targetVZ - this.velocity[2];
+                const maxDelta=accel*dt;
+                this.velocity[0] += Math.max(-maxDelta, Math.min(maxDelta, dvx));
+                this.velocity[2] += Math.max(-maxDelta, Math.min(maxDelta, dvz));
+                
+                if (this.onGround && wishLen<1e-3){
+                    const fr=Math.max(0, 1 - this.frictionGround*dt);
+                    this.velocity[0]*=fr;
+                    this.velocity[2]*=fr;
+                }
+                
+                if (this.onGround) {
+                    this.velocity[1] = 0;
+                } else {
+                    this.velocity[1] += this.gravity * dt;
+                    if (this.velocity[1] < this.terminalVelocity) {
+                        this.velocity[1] = this.terminalVelocity;
+                    }
+                }
+                
+                if (input.keys.jump && this.onGround){
+                    this.velocity[1] = this.jumpImpulse;
+                    this.onGround = false;
+                }
+                
+                const moveDelta=[this.velocity[0]*dt, this.velocity[1]*dt, this.velocity[2]*dt];
+                if (!this.onGround) this.fallDistance -= moveDelta[1];
+                
+                this.resolveCollisions(moveDelta);
+                
+                input.resetDeltas();
+            }
+            getAABB(){
+                const halfW=this.width/2;
+                return {
+                    min:[this.position[0]-halfW, this.position[1], this.position[2]-halfW],
+                    max:[this.position[0]+halfW, this.position[1]+this.height, this.position[2]+halfW]
+                };
+            }
+            
+            intersects(aabb1, aabb2) {
+                return (
+                    aabb1.max[0] > aabb2.min[0] && aabb1.min[0] < aabb2.max[0] &&
+                    aabb1.max[1] > aabb2.min[1] && aabb1.min[1] < aabb2.max[1] &&
+                    aabb1.max[2] > aabb2.min[2] && aabb1.min[2] < aabb2.max[2]
+                );
+            }
+
+            resolveCollisions(move) {
+                const wasOnGround = this.onGround;
+                this.onGround = false;
+
+                // --- ШАГ 1: ДВИЖЕНИЕ И КОЛЛИЗИЯ ПО ОСИ Y ---
+                const startAABB_Y = this.getAABB();
+                this.position[1] += move[1];
+                const endAABB_Y = this.getAABB();
+
+                const checkMinY = Math.floor(Math.min(startAABB_Y.min[1], endAABB_Y.min[1]));
+                const checkMaxY = Math.ceil(Math.max(startAABB_Y.max[1], endAABB_Y.max[1]));
+                let minX = Math.floor(startAABB_Y.min[0]), maxX = Math.ceil(startAABB_Y.max[0]);
+                let minZ = Math.floor(startAABB_Y.min[2]), maxZ = Math.ceil(startAABB_Y.max[2]);
+
+                for (let y = checkMinY; y < checkMaxY; y++) {
+                    for (let z = minZ; z < maxZ; z++) {
+                        for (let x = minX; x < maxX; x++) {
+                            const v = VoxelRegistry.get(this.world.getVoxel(x, y, z));
+                            if (!v || !v.solid) continue;
+                            const blockAABB = { min: [x, y, z], max: [x + 1, y + 1, z + 1] };
+                            if (this.intersects(this.getAABB(), blockAABB)) {
+                                if (move[1] > 0) {
+                                    this.position[1] = blockAABB.min[1] - this.height - 1e-4;
+                                } else if (move[1] < 0) {
+                                    this.position[1] = blockAABB.max[1];
+                                    this.onGround = true;
+                                }
+                                this.velocity[1] = 0;
+                            }
+                        }
+                    }
+                }
+
+                // --- ШАГ 2: ДВИЖЕНИЕ И КОЛЛИЗИЯ ПО ОСИ X ---
+                const startAABB_X = this.getAABB();
+                this.position[0] += move[0];
+                const endAABB_X = this.getAABB();
+
+                const checkMinX = Math.floor(Math.min(startAABB_X.min[0], endAABB_X.min[0]));
+                const checkMaxX = Math.ceil(Math.max(startAABB_X.max[0], endAABB_X.max[0]));
+                let minY = Math.floor(this.getAABB().min[1]), maxY = Math.ceil(this.getAABB().max[1]);
+                minZ = Math.floor(this.getAABB().min[2]), maxZ = Math.ceil(this.getAABB().max[2]);
+
+                for (let y = minY; y < maxY; y++) {
+                    for (let z = minZ; z < maxZ; z++) {
+                        for (let x = checkMinX; x < checkMaxX; x++) {
+                            const v = VoxelRegistry.get(this.world.getVoxel(x, y, z));
+                            if (!v || !v.solid) continue;
+                            const blockAABB = { min: [x, y, z], max: [x + 1, y + 1, z + 1] };
+                            if (this.intersects(this.getAABB(), blockAABB)) {
+                                if (move[0] > 0) {
+                                    this.position[0] = blockAABB.min[0] - this.width / 2 - 1e-4;
+                                } else if (move[0] < 0) {
+                                    this.position[0] = blockAABB.max[0] + this.width / 2 + 1e-4;
+                                }
+                                this.velocity[0] = 0;
+                            }
+                        }
+                    }
+                }
+
+                // --- ШАГ 3: ДВИЖЕНИЕ И КОЛЛИЗИЯ ПО ОСИ Z ---
+                const startAABB_Z = this.getAABB();
+                this.position[2] += move[2];
+                const endAABB_Z = this.getAABB();
+                
+                const checkMinZ = Math.floor(Math.min(startAABB_Z.min[2], endAABB_Z.min[2]));
+                const checkMaxZ = Math.ceil(Math.max(startAABB_Z.max[2], endAABB_Z.max[2]));
+                minX = Math.floor(this.getAABB().min[0]), maxX = Math.ceil(this.getAABB().max[0]);
+                minY = Math.floor(this.getAABB().min[1]), maxY = Math.ceil(this.getAABB().max[1]);
+                
+                for (let y = minY; y < maxY; y++) {
+                    for (let z = checkMinZ; z < checkMaxZ; z++) {
+                        for (let x = minX; x < maxX; x++) {
+                            const v = VoxelRegistry.get(this.world.getVoxel(x, y, z));
+                            if (!v || !v.solid) continue;
+                            const blockAABB = { min: [x, y, z], max: [x + 1, y + 1, z + 1] };
+                            if (this.intersects(this.getAABB(), blockAABB)) {
+                                if (move[2] > 0) {
+                                    this.position[2] = blockAABB.min[2] - this.width / 2 - 1e-4;
+                                } else if (move[2] < 0) {
+                                    this.position[2] = blockAABB.max[2] + this.width / 2 + 1e-4;
+                                }
+                                this.velocity[2] = 0;
+                            }
+                        }
+                    }
+                }
+
+                // --- ЛОГИКА УРОНА ОТ ПАДЕНИЯ ---
+                if (this.onGround && !wasOnGround) {
+                    if (this.fallDistance > 3.5) {
+                        const damage = Math.floor(this.fallDistance - 3);
+                        if (damage > 0) {
+                            this.health -= damage;
+                            if (this.health <= 0) {
+                                // Respawn logic
+                                this.health = 20;
+                                this.position[1] = 120;
+                                this.velocity.fill(0);
+                                this.snapToGround();
+                            }
+                        }
+                    }
+                }
+                
+                if (this.onGround) {
+                    this.fallDistance = 0;
+                }
+            }
+        }
+        // --- КОНЕЦ БЛОКА ИСПРАВЛЕНИЯ КОЛЛИЗИЙ ---
+        
+        class InputHandler {
+            constructor(canvas, player){ this.player=player; this.keys={}; this.dx=0; this.dy=0; this.lmb=false; this.rmb=false; this.lmbDown=false; this.rmbDown=false; this.mouseSensitivity=0.002; document.addEventListener('keydown', e=>this.onKey(e,true)); document.addEventListener('keyup', e=>this.onKey(e,false)); document.addEventListener('mousemove', e=>this.onMouseMove(e)); document.addEventListener('mousedown', e=>this.onMouseClick(e,true)); document.addEventListener('mouseup', e=>this.onMouseClick(e,false)); document.addEventListener('wheel', e=>this.onWheel(e)); canvas.addEventListener('contextmenu', e=>e.preventDefault()); canvas.addEventListener('click', ()=>{ if (document.pointerLockElement!==canvas) canvas.requestPointerLock(); }); }
+            onKey(e,isDown){ const map={'KeyW':'forward','KeyS':'backward','KeyA':'left','KeyD':'right','Space':'jump','ShiftLeft':'sprint'}; if (map[e.code]) { e.preventDefault(); this.keys[map[e.code]]=isDown; } if (e.code.startsWith('Digit') && isDown){ const num=parseInt(e.code.slice(5),10); if (num>=1 && num<=9) this.player.selectedHotbarIndex=(num-1)%this.player.hotbar.length; } }
+            onMouseMove(e){ if (document.pointerLockElement){ this.dx+=e.movementX; this.dy+=e.movementY; } }
+            onMouseClick(e,isDown){ if (e.button===0){ if (isDown && !this.lmb) this.lmbDown=true; this.lmb=isDown; } if (e.button===2){ if (isDown && !this.rmb) this.rmbDown=true; this.rmb=isDown; } }
+            onWheel(e){ const dir=Math.sign(e.deltaY); this.player.selectedHotbarIndex=(this.player.selectedHotbarIndex+dir+this.player.hotbar.length)%this.player.hotbar.length; }
+            resetDeltas(){ this.dx=0; this.dy=0; this.lmbDown=false; this.rmbDown=false; }
+        }
+        function raycast(world, start, dir, maxDist){ let x=Math.floor(start[0]), y=Math.floor(start[1]), z=Math.floor(start[2]); const stepX=Math.sign(dir[0])||1e-9, stepY=Math.sign(dir[1])||1e-9, stepZ=Math.sign(dir[2])||1e-9; const tDeltaX=Math.abs(1/(dir[0]||1e-9)), tDeltaY=Math.abs(1/(dir[1])||1e-9), tDeltaZ=Math.abs(1/(dir[2])||1e-9); let tMaxX=(stepX>0?(x+1-start[0]):(start[0]-x))*tDeltaX; let tMaxY=(stepY>0?(y+1-start[1]):(start[1]-y))*tDeltaY; let tMaxZ=(stepZ>0?(z+1-start[2]):(start[2]-z))*tDeltaZ; let last=[x,y,z]; while (Math.hypot(x-start[0], y-start[1], z-start[2]) < maxDist){ const id=world.getVoxel(x,y,z); const v=VoxelRegistry.get(id); if (v && (v.solid || v.liquid || v.luminance>0)) return { position:[x,y,z], face:last.map((vv,i)=>[x,y,z][i]-vv), id }; last=[x,y,z]; if (tMaxX < tMaxY){ if (tMaxX < tMaxZ){ x+=Math.sign(stepX); tMaxX+=tDeltaX; } else { z+=Math.sign(stepZ); tMaxZ+=tDeltaZ; } } else { if (tMaxY < tMaxZ){ y+=Math.sign(stepY); tMaxY+=tDeltaY; } else { z+=Math.sign(stepZ); tMaxZ+=tDeltaZ; } } } return null; }
+        function getToolEffectiveness(item, block){ if (!block.requiredTool) return 1.0; if (!item || item.toolType!==block.requiredTool) return 0.33; switch(item.toolTier){ case ToolTier.WOOD: return 2.0; case ToolTier.STONE: return 4.0; case ToolTier.IRON: return 6.0; default: return 1.0; } }
+
+        // ===========================
+        // Новый RTX Renderer
+        // ===========================
+        class RTXRenderer {
+            constructor(canvas, world){
+                this.canvas=canvas;
+                this.world=world;
+                this.world.setRenderer(this);
+
+                const gl = this.gl = canvas.getContext('webgl2', { antialias:false, alpha:false });
+                if (!gl) { alert('WebGL2 не поддерживается'); throw 'WebGL2 not supported'; }
+                const ext = gl.getExtension('EXT_color_buffer_float');
+                if (!ext) console.warn('EXT_color_buffer_float не поддерживается (может не заработать накопление в float).');
+
+                this.rayTraceProgram = this.createProgram(this.fullscreenVS(), this.voxelPathTracerFS());
+                this.displayProgram = this.createProgram(this.fullscreenVS(), this.displayFS());
+
+                this.uRT = { cameraPosition: gl.getUniformLocation(this.rayTraceProgram, 'u_camPos'), cameraForward: gl.getUniformLocation(this.rayTraceProgram, 'u_camFwd'), cameraRight: gl.getUniformLocation(this.rayTraceProgram, 'u_camRight'), cameraUp: gl.getUniformLocation(this.rayTraceProgram, 'u_camUp'), aspect: gl.getUniformLocation(this.rayTraceProgram, 'u_aspect'), sampleIndex: gl.getUniformLocation(this.rayTraceProgram, 'u_sampleIndex'), time: gl.getUniformLocation(this.rayTraceProgram, 'u_time'), resolution: gl.getUniformLocation(this.rayTraceProgram, 'u_resolution'), maxBounces: gl.getUniformLocation(this.rayTraceProgram, 'u_maxBounces'), useDof: gl.getUniformLocation(this.rayTraceProgram, 'u_useDof'), focusDistance: gl.getUniformLocation(this.rayTraceProgram, 'u_focusDistance'), aperture: gl.getUniformLocation(this.rayTraceProgram, 'u_aperture'), volumeOrigin: gl.getUniformLocation(this.rayTraceProgram, 'u_volumeOrigin'), volumeSize: gl.getUniformLocation(this.rayTraceProgram, 'u_volumeSize'), sunDir: gl.getUniformLocation(this.rayTraceProgram, 'u_sunDir'), skyColor: gl.getUniformLocation(this.rayTraceProgram, 'u_skyColor'), sunColor: gl.getUniformLocation(this.rayTraceProgram, 'u_sunColor'), voxels: gl.getUniformLocation(this.rayTraceProgram, 'u_voxels'), materialLUT: gl.getUniformLocation(this.rayTraceProgram, 'u_materialLUT') };
+                this.uDisp = { accumulationTexture: gl.getUniformLocation(this.displayProgram, 'accumulationTexture'), sampleCount: gl.getUniformLocation(this.displayProgram, 'sampleCount') };
+
+                this.quadVAO = gl.createVertexArray();
+                gl.bindVertexArray(this.quadVAO);
+                const vbo=gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+                const posLoc = gl.getAttribLocation(this.rayTraceProgram, 'position');
+                gl.enableVertexAttribArray(posLoc);
+                gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+                gl.bindVertexArray(null);
+
+                this.sampleCount=0;
+                this.accumTex=null;
+                this.fbo=null;
+
+                this.volumeSizeX = (2*CONFIG.RENDER_DISTANCE + 1) * CONFIG.CHUNK_SIZE;
+                this.volumeSizeY = CONFIG.CHUNK_HEIGHT;
+                this.volumeSizeZ = (2*CONFIG.RENDER_DISTANCE + 1) * CONFIG.CHUNK_SIZE;
+                this.volumeOrigin = [0,0,0];
+                this._currentCenterChunk = null;
+
+                this.voxelTex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_3D, this.voxelTex);
+                gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+                gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8UI, this.volumeSizeX, this.volumeSizeY, this.volumeSizeZ, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, null);
+                gl.bindTexture(gl.TEXTURE_3D, null);
+
+                this.materialLUT = gl.createTexture();
+                this.buildMaterialLUT();
+
+                this.settings = { quality:'medium', maxBounces:5, useDof:true, focusDistance:8.0, aperture:0.04, resolutionScale:0.5 };
+                this.needsReset=true;
+
+                window.addEventListener('resize', ()=>this.resize());
+                this.resize(true);
+            }
+            
+            fullscreenVS(){ return `#version 300 es\nin vec2 position; out vec2 v_uv; void main(){ v_uv = position*0.5 + 0.5; gl_Position = vec4(position,0.0,1.0); }`; }
+            
+            voxelPathTracerFS(){ return `#version 300 es
+                precision highp float;
+                precision highp int;
+                precision highp usampler3D;
+
+                in vec2 v_uv;
+                out vec4 fragColor;
+
+                uniform vec3 u_camPos;
+                uniform vec3 u_camFwd, u_camRight, u_camUp;
+                uniform float u_aspect;
+                uniform int u_sampleIndex;
+                uniform float u_time;
+                uniform vec2 u_resolution;
+                uniform int u_maxBounces;
+                uniform bool u_useDof;
+                uniform float u_focusDistance;
+                uniform float u_aperture;
+                
+                uniform highp usampler3D u_voxels;
+                uniform highp sampler2D u_materialLUT;
+                
+                uniform vec3 u_volumeOrigin;
+                uniform ivec3 u_volumeSize;
+                uniform vec3 u_sunDir;
+                uniform vec3 u_skyColor;
+                uniform vec3 u_sunColor;
+                
+                const float PI = 3.14159265359;
+                const float EPS = 1e-4;
+                const float AIR_IOR = 1.0;
+
+                // --- НОВЫЙ КОД: ID блоков для удобства ---
+                const uint ID_AETHERIA = 0u;
+                const uint ID_LITHOS = 1u;
+                const uint ID_TERRASOLIDA = 2u;
+                const uint ID_GRASS = 3u;
+                const uint ID_SAND = 4u;
+                const uint ID_SANDSTONE = 5u;
+                const uint ID_LIGNUM = 6u;
+                const uint ID_FOLIA = 7u;
+                const uint ID_CACTUS = 8u;
+                const uint ID_BEDROCK = 9u;
+                const uint ID_AQUAFLUENS = 10u;
+                const uint ID_MAGMAFLUX = 11u;
+                const uint ID_LUXCRYSTAL = 12u;
+                const uint ID_COAL_ORE = 13u;
+                const uint ID_IRON_ORE = 14u;
+                
+                vec2 randState;
+                void rng_init(vec2 pixel, int sampleIdx, float t){ randState = pixel + vec2(float(sampleIdx)*1.37, float(sampleIdx)*3.79) + fract(t*17.0)*5.0; }
+                float rand1(){ randState = fract(sin(dot(randState.xy, vec2(12.9898, 78.233))) * vec2(43758.5453, 31415.9265)); return randState.x; }
+                vec2 rand2(){ rand1(); return randState; }
+
+                                // --- НОВЫЙ КОД: Хэш-функция для процедурных текстур ---
+                float hash31(vec3 p) {
+                    p = fract(p * 0.1031);
+                    p += dot(p, p.yzx + 19.19);
+                    return fract((p.x + p.y) * p.z);
+                }
+
+                // --- НОВЫЙ КОД: Функция для плавного 'Bevel' бампа ---
+                // Эта функция берет значения шума в 8 углах куба и плавно их смешивает
+                float getSmoothHeight(vec3 p_tex) {
+                    vec3 coord = floor(p_tex);
+                    vec3 f = fract(p_tex);
+                    
+                    // Плавная интерполяция вместо линейной (эффект Bevel)
+                    vec3 f_smooth = f * f * (3.0 - 2.0 * f);
+
+                    // Получаем значения шума в 8 углах окружающего куба
+                    float h000 = hash31(coord + vec3(0.0, 0.0, 0.0));
+                    float h100 = hash31(coord + vec3(1.0, 0.0, 0.0));
+                    float h010 = hash31(coord + vec3(0.0, 1.0, 0.0));
+                    float h110 = hash31(coord + vec3(1.0, 1.0, 0.0));
+                    float h001 = hash31(coord + vec3(0.0, 0.0, 1.0));
+                    float h101 = hash31(coord + vec3(1.0, 0.0, 1.0));
+                    float h011 = hash31(coord + vec3(0.0, 1.0, 1.0));
+                    float h111 = hash31(coord + vec3(1.0, 1.0, 1.0));
+
+                    // Трилинейная интерполяция
+                    return mix(
+                        mix(mix(h000, h100, f_smooth.x), mix(h010, h110, f_smooth.x), f_smooth.y),
+                        mix(mix(h001, h101, f_smooth.x), mix(h011, h111, f_smooth.x), f_smooth.y),
+                        f_smooth.z
+                    );
+                }
+
+
+                struct Material { vec3 albedo; float metallic; float roughness; float ior; float transmission; vec3 emission; };
+                struct Hit { bool hit; vec3 pos; vec3 normal; uint id; float t; };
+
+                vec3 step_direction(ivec3 s) { return vec3(s.x > 0 ? 1.0 : 0.0, s.y > 0 ? 1.0 : 0.0, s.z > 0 ? 1.0 : 0.0); }
+                
+                Material getMaterial(uint idu){
+                    int id = int(idu) & 255;
+                    vec4 r0 = texelFetch(u_materialLUT, ivec2(id, 0), 0);
+                    vec4 r1 = texelFetch(u_materialLUT, ivec2(id, 1), 0);
+                    vec4 r2 = texelFetch(u_materialLUT, ivec2(id, 2), 0);
+                    
+                    Material m;
+                    m.albedo = r0.rgb;
+                    m.metallic = r0.a;
+                    m.emission = r1.rgb;
+                    m.roughness = max(0.001, min(1.0, r1.a));
+                    m.ior = max(1.0, r2.r);
+                    m.transmission = clamp(r2.g, 0.0, 1.0);
+                    return m;
+                }
+                
+                bool aabbIntersect(vec3 ro, vec3 rd, out float tmin, out float tmax){ vec3 inv = 1.0 / (rd + 1e-8); vec3 t0 = (vec3(0.0) - ro) * inv; vec3 t1 = (vec3(u_volumeSize) - ro) * inv; vec3 tsm = min(t0,t1); vec3 tbg = max(t0,t1); tmin = max(max(tsm.x, tsm.y), tsm.z); tmax = min(min(tbg.x, tbg.y), tbg.z); return tmax >= max(tmin, 0.0); }
+                
+                uint fetchVoxel(ivec3 c){ if (c.x<0 || c.y<0 || c.z<0 || c.x>=u_volumeSize.x || c.y>=u_volumeSize.y || c.z>=u_volumeSize.z) return uint(0); uvec4 texel = texelFetch(u_voxels, c, 0); return texel.r; }
+                
+                Hit ddaTrace(vec3 ro_world, vec3 rd_world, float tMaxDistance){
+                    Hit h; h.hit=false; h.t=tMaxDistance; h.id=uint(0); h.normal=vec3(0.0);
+                    vec3 ro = ro_world - u_volumeOrigin;
+                    float tEnter, tExit;
+                    if(!aabbIntersect(ro, rd_world, tEnter, tExit)) return h;
+                    if (tEnter > 0.0) ro += rd_world * tEnter;
+                    ivec3 cell = ivec3(floor(ro));
+                    ivec3 step = ivec3(sign(rd_world));
+                    vec3 tMax = (vec3(cell) + step_direction(step) - ro) / rd_world;
+                    vec3 tDelta = abs(vec3(1.0) / rd_world);
+                    float t = max(tEnter, 0.0);
+                    
+                    for (int i=0;i<1024;i++){
+                        if (cell.x<0||cell.y<0||cell.z<0||cell.x>=u_volumeSize.x||cell.y>=u_volumeSize.y||cell.z>=u_volumeSize.z) break;
+                        uint id = fetchVoxel(cell);
+                        if (id != ID_AETHERIA && id != ID_AQUAFLUENS) {
+                            h.hit=true; h.id=id; h.t=t;
+                            vec3 tPrev = tMax - tDelta;
+                            if (tPrev.x > tPrev.y && tPrev.x > tPrev.z) h.normal = vec3(-step.x, 0.0, 0.0);
+                            else if (tPrev.y > tPrev.x && tPrev.y > tPrev.z) h.normal = vec3(0.0, -step.y, 0.0);
+                            else h.normal = vec3(0.0, 0.0, -step.z);
+                            h.pos = ro_world + rd_world*t;
+                            return h;
+                        }
+                        if (tMax.x < tMax.y){ if (tMax.x < tMax.z){ cell.x += step.x; t = tMax.x; tMax.x += tDelta.x; } else { cell.z += step.z; t = tMax.z; tMax.z += tDelta.z; } }
+                        else { if (tMax.y < tMax.z){ cell.y += step.y; t = tMax.y; tMax.y += tDelta.y; } else { cell.z += step.z; t = tMax.z; tMax.z += tDelta.z; } }
+                        if (t > tExit || t > tMaxDistance) break;
+                    }
+                    return h;
+                }
+
+                Hit ddaTraceWithLiquids(vec3 ro_world, vec3 rd_world, float tMaxDistance){
+                    Hit h; h.hit=false; h.t=tMaxDistance; h.id=uint(0); h.normal=vec3(0.0);
+                    vec3 ro = ro_world - u_volumeOrigin;
+                    float tEnter, tExit;
+                    if(!aabbIntersect(ro, rd_world, tEnter, tExit)) return h;
+                    if (tEnter > 0.0) ro += rd_world * tEnter;
+                    ivec3 cell = ivec3(floor(ro));
+                    ivec3 step = ivec3(sign(rd_world));
+                    vec3 tMax = (vec3(cell) + step_direction(step) - ro) / rd_world;
+                    vec3 tDelta = abs(vec3(1.0) / rd_world);
+                    float t = max(tEnter, 0.0);
+                    
+                    for (int i=0;i<1024;i++){
+                        if (cell.x<0||cell.y<0||cell.z<0||cell.x>=u_volumeSize.x||cell.y>=u_volumeSize.y||cell.z>=u_volumeSize.z) break;
+                        uint id = fetchVoxel(cell);
+                        if (id != ID_AETHERIA) {
+                            h.hit=true; h.id=id; h.t=t;
+                            vec3 tPrev = tMax - tDelta;
+                            if (tPrev.x > tPrev.y && tPrev.x > tPrev.z) h.normal = vec3(-step.x, 0.0, 0.0);
+                            else if (tPrev.y > tPrev.x && tPrev.y > tPrev.z) h.normal = vec3(0.0, -step.y, 0.0);
+                            else h.normal = vec3(0.0, 0.0, -step.z);
+                            h.pos = ro_world + rd_world*t;
+                            return h;
+                        }
+                        if (tMax.x < tMax.y){ if (tMax.x < tMax.z){ cell.x += step.x; t = tMax.x; tMax.x += tDelta.x; } else { cell.z += step.z; t = tMax.z; tMax.z += tDelta.z; } }
+                        else { if (tMax.y < tMax.z){ cell.y += step.y; t = tMax.y; tMax.y += tDelta.y; } else { cell.z += step.z; t = tMax.z; tMax.z += tDelta.z; } }
+                        if (t > tExit || t > tMaxDistance) break;
+                    }
+                    return h;
+                }
+
+                float ndfGGX(float NdotH, float rough){ float a = rough*rough; float a2 = a*a; float NdotH2 = NdotH*NdotH; float denom = (NdotH2*(a2-1.0)+1.0); return a2 / (PI*denom*denom); }
+                float geometrySchlickGGX(float NdotV, float rough){ float r = rough + 1.0; float k = (r*r)/8.0; return NdotV / (NdotV * (1.0 - k) + k); }
+                float geometrySmith(float NdotV, float NdotL, float rough){ return geometrySchlickGGX(NdotV, rough) * geometrySchlickGGX(NdotL, rough); }
+                vec3 fresnelSchlick(float cosTheta, vec3 F0){ return F0 + (1.0-F0)*pow(clamp(1.0-cosTheta,0.0,1.0), 5.0); }
+                float fresnelReflectance(float cosTheta, float iorFrom, float iorTo){ float r0 = (iorFrom - iorTo) / (iorFrom + iorTo); r0 = r0*r0; float angleTerm = pow(1.0 - cosTheta, 5.0); return r0 + (1.0 - r0) * angleTerm; }
+                vec3 refractRay(vec3 I, vec3 N, float eta, out bool tir){ float cosI = clamp(dot(-I,N), -1.0, 1.0); float sinT2 = eta*eta*(1.0 - cosI*cosI); tir = (sinT2>1.0); if (tir) return vec3(0.0); float cosT = sqrt(1.0 - sinT2); return eta*I + (eta*cosI - cosT)*N; }
+                vec3 sampleHemisphereCosine(vec3 n){ vec2 r = rand2(); float phi = 2.0*PI*r.x; float cosTheta = sqrt(1.0 - r.y); float sinTheta = sqrt(r.y); vec3 h = vec3(cos(phi)*sinTheta, sin(phi)*sinTheta, cosTheta); vec3 up = abs(n.z) < 0.999 ? vec3(0,0,1) : vec3(1,0,0); vec3 t = normalize(cross(up, n)); vec3 b = cross(n, t); return normalize(t*h.x + b*h.y + n*h.z); }
+                float shadowSun(vec3 ro, vec3 n, vec3 sunDir){ ro += n * EPS*2.0; Hit hs = ddaTrace(ro, sunDir, 1e5); return hs.hit ? 0.0 : 1.0; }
+
+                // --- НАЧАЛО ИСПРАВЛЕННОГО БЛОКА ДЛЯ НЕБА ---
+
+                // Вспомогательные функции для шума (оставляем без изменений)
+                vec2 hash2(vec2 p) {
+                    p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+                    return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
+                }
+
+                float noise(vec2 p) {
+                    vec2 i = floor(p);
+                    vec2 f = fract(p);
+                    vec2 u = f * f * (3.0 - 2.0 * f);
+                    float a = dot(hash2(i + vec2(0.0, 0.0)), f - vec2(0.0, 0.0));
+                    float b = dot(hash2(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0));
+                    float c = dot(hash2(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0));
+                    float d = dot(hash2(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0));
+                    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+                }
+
+                float fbm(vec2 p, int octaves) {
+                    float value = 0.0;
+                    float amplitude = 0.5;
+                    float frequency = 1.0;
+                    for (int i = 0; i < octaves; i++) {
+                        value += amplitude * noise(p * frequency);
+                        frequency *= 2.0;
+                        amplitude *= 0.5;
+                    }
+                    return value;
+                }
+
+                                                                // Полностью переработанная функция рендеринга неба
+                vec3 environment(vec3 rd) {
+                    // --- 1. Параметры ---
+                    float sunDot = dot(rd, u_sunDir);
+                    float sunElevation = smoothstep(-0.1, 0.1, u_sunDir.y);
+                    
+                    // --- 2. Диск Солнца ---
+                    vec3 daySunColor = vec3(1.0, 0.95, 0.85);
+                    vec3 sunsetSunColor = vec3(1.8, 0.7, 0.25);
+                    float sunsetFactorForDisk = pow(1.0 - sunElevation, 2.5);
+                    vec3 diskColor = mix(daySunColor, sunsetSunColor, sunsetFactorForDisk);
+                    if (sunDot > 0.9985) {
+                        return diskColor * 35.0 * smoothstep(0.9985, 1.0, sunDot);
+                    }
+
+                    // --- 3. Модель атмосферы ---
+                    float viewElevation = max(0.0, rd.y);
+                    float airMass = 1.0 / (viewElevation + 0.1);
+                    float rayleighPhase = 0.75 * (1.0 + pow(sunDot, 2.0));
+                    vec3 rayleighColor = vec3(0.08, 0.22, 0.5) * sunElevation;
+                    vec3 extinction = exp(-rayleighColor * airMass * 2.5);
+                    vec3 rayleighScattering = rayleighColor * rayleighPhase * (1.0 - extinction);
+                    
+                    // --- 5. Рассеяние Ми ---
+                    const float g = 0.9; 
+                    float miePhase = 0.1 * ((1.0 - g*g) / pow(1.0 - 2.0*g*sunDot + g*g, 1.5));
+                    vec3 mieExtinction = exp(-vec3(1.0) * airMass * 0.5);
+                    vec3 mieScattering = vec3(1.0) * miePhase * (1.0 - mieExtinction);
+
+                    // --- 6. Цвет заката/рассвета ---
+                    float sunsetFactor = pow(1.0 - sunElevation, 3.0);
+                    vec3 sunsetAtmoColor = vec3(1.2, 0.55, 0.2) * sunsetFactor;
+                    
+                    // --- 7. Собираем итоговый цвет неба ---
+                    vec3 skyColor = (rayleighScattering + mieScattering) * (u_sunColor + sunsetAtmoColor);
+                    skyColor += sunsetAtmoColor * 0.3 * miePhase;
+
+                    // --- 8. Процедурные Облака (ДВА ИСПРАВЛЕНИЯ) ---
+                    if (rd.y > 0.0) {
+                        vec2 cloudBaseUV = rd.xz / (rd.y + 0.1);
+                        vec2 cloudAnimUV1 = cloudBaseUV * 0.2 + u_time * 0.01;
+                        vec2 cloudAnimUV2 = cloudBaseUV * 0.7 + u_time * 0.02;
+                        float cloudShape = fbm(cloudAnimUV1, 5);
+                        float cloudDetail = fbm(cloudAnimUV2, 6);
+                        float cloudDensity = mix(cloudShape, cloudDetail, 0.3);
+                        
+                        // ИСПРАВЛЕНИЕ #1: Делаем облака видимыми
+                        // Переводим диапазон шума из [-1, 1] в [0, 1]
+                        cloudDensity = (cloudDensity + 1.0) * 0.5;
+                        cloudDensity = smoothstep(0.5, 0.7, cloudDensity); // Фильтруем для "пушистости"
+                        
+                        if (cloudDensity > 0.0) {
+                            vec3 cloudBaseColor = vec3(0.95, 0.95, 1.0);
+                            
+                            // ИСПРАВЛЕНИЕ #2: Убираем свечение ночью
+                            // Базовое освещение для облаков (теневая сторона) теперь зависит от цвета неба,
+                            // а не является постоянной величиной.
+                            vec3 cloudLight = skyColor * 0.4; // Тень облака принимает 40% цвета неба
+                            
+                            // Добавляем прямой свет от солнца
+                            float sunLightAmount = max(0.0, dot(normalize(u_sunDir + vec3(0, 0.1, 0)), rd));
+                            cloudLight += u_sunColor * sunLightAmount * 1.5;
+                            cloudLight += sunsetAtmoColor * sunLightAmount * 2.5; 
+                            
+                            vec3 finalCloudColor = cloudBaseColor * cloudLight;
+                            
+                            // Смешиваем цвет неба с цветом облаков
+                            float horizonFade = smoothstep(0.0, 0.15, rd.y);
+                            skyColor = mix(skyColor, finalCloudColor, cloudDensity * horizonFade);
+                        }
+                    }
+                    
+                    return clamp(skyColor * 1.5, 0.0, 5.0);
+                }
+
+                // --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА ДЛЯ НЕБА ---
+                
+                // --- НОВЫЙ КОД: Функция для определения, нужен ли блоку процедурный текстурный эффект ---
+                bool isTexturable(uint id) {
+                    return (id == ID_LITHOS || id == ID_TERRASOLIDA || id == ID_GRASS || id == ID_SAND ||
+                            id == ID_SANDSTONE || id == ID_LIGNUM || id == ID_BEDROCK || id == ID_COAL_ORE || id == ID_IRON_ORE);
+                }
+
+                vec3 tracePath(vec3 ro, vec3 rd){
+                    vec3 throughput = vec3(1.0); vec3 color = vec3(0.0);
+                    float currentIOR = AIR_IOR;
+                    bool isInside = false;
+
+                    for (int bounce=0; bounce<64; ++bounce){
+                        if (bounce >= u_maxBounces) break;
+                        Hit h = ddaTraceWithLiquids(ro, rd, 1e4);
+                        if (!h.hit){ color += throughput * environment(rd); break; }
+                        
+                        Material m = getMaterial(h.id);
+                        vec3 p = h.pos;
+                        vec3 N_geom = normalize(h.normal);
+                        vec3 N = dot(N_geom, rd) < 0.0 ? N_geom : -N_geom;
+                        isInside = dot(N_geom, rd) > 0.0;
+                        vec3 V = -rd;
+
+                        // --- НОВЫЙ КОД: Процедурное текстурирование и Bump Mapping ---
+                        if (isTexturable(h.id)) {
+                            // Масштабируем мировые координаты для создания текстурного пространства
+                            // Можете поэкспериментировать с этим значением. Меньше = крупнее текстура.
+                            const float texScale = 16.0;
+                            vec3 p_tex = p * texScale;
+
+                            // 1. Получаем плавное значение шума для вариации цвета
+                            float smooth_h = getSmoothHeight(p_tex);
+                            m.albedo = mix(m.albedo * 0.9, m.albedo * 1.1, smooth_h);
+
+                            // 2. Генерируем нормаль для bump-эффекта на основе гладкого шума
+                            // Сила бампа. Можете менять это значение.
+                            const float bumpStrength = 10.0; 
+                            const float d = 0.1; // Смещение для расчета градиента
+
+                            // Рассчитываем градиент с помощью центральных разностей
+                            vec3 grad = vec3(
+                                getSmoothHeight(p_tex + vec3(d, 0.0, 0.0)) - getSmoothHeight(p_tex - vec3(d, 0.0, 0.0)),
+                                getSmoothHeight(p_tex + vec3(0.0, d, 0.0)) - getSmoothHeight(p_tex - vec3(0.0, d, 0.0)),
+                                getSmoothHeight(p_tex + vec3(0.0, 0.0, d)) - getSmoothHeight(p_tex - vec3(0.0, 0.0, d))
+                            ) / (2.0 * d);
+                            
+                            // Возмущаем исходную нормаль
+                            // Уменьшаем эффект на гладких поверхностях (низкая шероховатость)
+                            N = normalize(N - grad * bumpStrength * (1.0 - m.roughness));
+                        }
+                        // --- КОНЕЦ НОВОГО КОДА ---
+
+
+                        if (dot(m.emission, m.emission) > 0.0){ color += throughput * m.emission; }
+                        
+                        float sunNL = max(0.0, dot(N, u_sunDir));
+                        if (sunNL > 0.0 && m.transmission < 0.99){
+                            float vis = shadowSun(p, N, u_sunDir);
+                            if (vis > 0.0){
+                                vec3 H = normalize(u_sunDir + V); float NdotH = max(0.0, dot(N,H)); float NdotV = max(0.0, dot(N,V)); float VdotH = max(0.0, dot(V,H));
+                                vec3 F0 = mix(vec3(0.04), m.albedo, m.metallic);
+                                vec3 F = fresnelSchlick(VdotH, F0);
+                                float D = ndfGGX(NdotH, m.roughness);
+                                float G = geometrySmith(NdotV, sunNL, m.roughness);
+                                vec3 spec = (D*G*F) / max(4.0*NdotV*sunNL, 1e-5);
+                                vec3 kd = (1.0 - F) * (1.0 - m.metallic);
+                                vec3 diff = kd * m.albedo / PI;
+                                color += throughput * (diff + spec) * sunNL * u_sunColor * vis;
+                            }
+                        }
+                        
+                        float pcont = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.05, 0.99);
+                        if (bounce > 2 && rand1() > pcont) break;
+                        throughput /= pcont;
+                        
+                        if (m.transmission > 0.0 && m.metallic < 0.1){
+                            float iorFrom = isInside ? m.ior : AIR_IOR;
+                            float iorTo = isInside ? AIR_IOR : m.ior;
+                            float eta = iorFrom / iorTo;
+                            float cosI = abs(dot(N,V));
+                            float Fr = fresnelReflectance(cosI, iorFrom, iorTo);
+                            if (rand1() < Fr){ rd = reflect(rd, N); ro = p + N*EPS*2.0; }
+                            else { bool tir; vec3 tdir = refractRay(rd, N, eta, tir); if(tir){ rd = reflect(rd, N); ro = p + N*EPS*2.0; } else { rd = normalize(tdir); ro = p - N*EPS*2.0; throughput *= m.albedo; } }
+                        } else {
+                            if (m.metallic < 0.1){ rd = sampleHemisphereCosine(N); ro = p + N*EPS*2.0; throughput *= m.albedo; }
+                            else { rd = reflect(rd, N); ro = p + N*EPS*2.0; throughput *= m.albedo; }
+                        }
+                        if (dot(throughput, throughput) < 1e-4 && bounce > 3) break;
+                    }
+                    return color;
+                }
+
+                void main(){
+                    vec2 pixel = gl_FragCoord.xy;
+                    rng_init(pixel, u_sampleIndex, u_time);
+                    vec2 jitter = (rand2() - 0.5) / u_resolution;
+                    vec2 uv = v_uv + jitter;
+                    vec2 ndc = uv*2.0 - 1.0;
+                    vec3 rd = normalize(u_camFwd + u_camRight * ndc.x * u_aspect + u_camUp * ndc.y);
+                    vec3 ro = u_camPos;
+                    if (u_useDof && u_aperture > 0.0){ vec3 fp = u_camPos + rd * u_focusDistance; vec2 lens = rand2(); float a = 2.0*PI*lens.x; float r = sqrt(lens.y) * u_aperture; vec2 offset = vec2(cos(a), sin(a))*r; ro = u_camPos + u_camRight*offset.x + u_camUp*offset.y; rd = normalize(fp - ro); }
+                    vec3 col = tracePath(ro, rd);
+                    fragColor = vec4(col, 1.0);
+                }
+            `;}
+            
+            displayFS(){ return `#version 300 es
+                precision highp float;
+                in vec2 v_uv; out vec4 fragColor;
+                uniform highp sampler2D accumulationTexture;
+                uniform int sampleCount;
+                vec3 acesFilm(vec3 x){ float a=2.51; float b=0.03; float c=2.43; float d=0.59; float e=0.14; return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0); }
+                vec3 linearToSRGB(vec3 x){ return pow(x, vec3(1.0/2.2)); }
+                void main(){
+                    vec3 acc = texture(accumulationTexture, v_uv).rgb;
+                    vec3 avg = acc / float(max(1, sampleCount));
+                    avg = acesFilm(avg * 0.6);
+                    avg = linearToSRGB(avg);
+                    fragColor = vec4(avg, 1.0);
+                }
+            `;}
+            
+            createProgram(vsSrc, fsSrc){ const gl=this.gl; const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, vsSrc); gl.compileShader(vs); if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) throw new Error('VS: '+gl.getShaderInfoLog(vs)); const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, fsSrc); gl.compileShader(fs); if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) throw new Error('FS: '+gl.getShaderInfoLog(fs)); const p = gl.createProgram(); gl.attachShader(p,vs); gl.attachShader(p,fs); gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('LINK: '+gl.getProgramInfoLog(p)); gl.deleteShader(vs); gl.deleteShader(fs); return p; }
+            
+            buildMaterialLUT(){
+                const gl=this.gl;
+                const W=256, H=3; // 256 ID, 3 строки на материал
+                const data = new Float32Array(W*H*4);
+                function set(id, row, r, g, b, a){ const idx = (row*W + id)*4; data[idx]=r; data[idx+1]=g; data[idx+2]=b; data[idx+3]=a; }
+                for(let i=0;i<W;i++){ set(i,0,0,0,0,0); set(i,1,0,0,0,1); set(i,2,1,0,0,0); }
+                function defMat(id, albedo, metallic, rough, ior, trans, emission){ set(id,0, albedo[0], albedo[1], albedo[2], metallic); set(id,1, emission[0], emission[1], emission[2], rough); set(id,2, ior, trans, 0, 0); }
+
+                defMat(Aetheria, [0,0,0], 0.0, 1.0, 1.0, 1.0, [0,0,0]);
+                defMat(Lithos, [0.6,0.6,0.6], 0.0, 0.9, 1.5, 0.0, [0,0,0]);
+                defMat(TerraSolida, [0.42,0.31,0.22], 0.0, 0.95, 1.5, 0.0, [0,0,0]);
+                defMat(Grass, [0.24,0.6,0.24], 0.0, 0.8, 1.5, 0.0, [0,0,0]);
+                defMat(Sand, [0.88,0.83,0.64], 0.0, 0.9, 1.5, 0.0, [0,0,0]);
+                defMat(Sandstone, [0.78,0.72,0.50], 0.0, 0.9, 1.5, 0.0, [0,0,0]);
+                defMat(Lignum, [0.36,0.24,0.14], 0.0, 0.7, 1.5, 0.0, [0,0,0]);
+                defMat(Folia, [0.2,0.5,0.3], 0.0, 0.95, 1.3, 0.2, [0,0,0]);
+                defMat(Cactus, [0.14,0.47,0.19], 0.0, 0.85, 1.4, 0.05, [0,0,0]);
+                defMat(Bedrock, [0.2,0.2,0.2], 0.0, 1.0, 1.5, 0.0, [0,0,0]);
+                defMat(AquaFluens, [0.2,0.4,0.8], 0.0, 0.02, 1.333, 1.0, [0,0,0]);
+                defMat(MagmaFlux, [0.15,0.05,0.0], 0.0, 0.4, 1.5, 0.0, [8.0,3.5,1.0]);
+                defMat(LuxCrystal, [0.9,0.95,1.0], 0.0, 0.02, 1.5, 0.2, [6.0,6.0,6.5]);
+                defMat(COAL_ORE, [0.35,0.35,0.35], 0.0, 0.9, 1.5, 0.0, [0,0,0]);
+                defMat(IRON_ORE, [0.55,0.48,0.42], 0.0, 0.85, 1.5, 0.0, [0,0,0]);
+
+                gl.bindTexture(gl.TEXTURE_2D, this.materialLUT);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, data);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                gl.bindTexture(gl.TEXTURE_2D, null);
+            }
+
+            resize(skipReset=false){ const gl=this.gl; const dpr = window.devicePixelRatio || 1; this.canvas.width = Math.floor(this.canvas.clientWidth * dpr); this.canvas.height = Math.floor(this.canvas.clientHeight * dpr); const scale = this.settings.resolutionScale || 1.0; const W = Math.max(1, Math.floor(this.canvas.width * scale)); const H = Math.max(1, Math.floor(this.canvas.height * scale)); if (this.accumTex) gl.deleteTexture(this.accumTex); if (this.fbo) gl.deleteFramebuffer(this.fbo); this.accumTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, this.accumTex); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, null); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); this.fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.accumTex, 0); const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (status !== gl.FRAMEBUFFER_COMPLETE) console.error('FBO incomplete:', status.toString(16)); gl.bindFramebuffer(gl.FRAMEBUFFER, null); this.ptWidth = W; this.ptHeight = H; this.needsReset = true; }
+            
+            ensureVolumeForPlayer(player, force=false){ const cx = Math.floor(player.position[0]/CONFIG.CHUNK_SIZE); const cz = Math.floor(player.position[2]/CONFIG.CHUNK_SIZE); const key = `${cx},${cz}`; if (!force && this._currentCenterChunk === key) return; this._currentCenterChunk = key; const x0 = (cx - CONFIG.RENDER_DISTANCE) * CONFIG.CHUNK_SIZE; const z0 = (cz - CONFIG.RENDER_DISTANCE) * CONFIG.CHUNK_SIZE; this.volumeOrigin = [x0, 0, z0]; this.rebuildVolumeFromWorld(x0, z0); this.needsReset = true; }
+            
+            rebuildVolumeFromWorld(x0, z0){
+                const gl = this.gl;
+                const SX = this.volumeSizeX, SY = this.volumeSizeY, SZ = this.volumeSizeZ;
+                const volume = new Uint8Array(SX * SY * SZ);
+                for (const chunk of this.world.iterateChunksInRange(x0, z0, x0 + SX, z0 + SZ)) {
+                    if (!chunk || chunk.generating) continue;
+                    const cX0 = chunk.worldPos[0], cZ0 = chunk.worldPos[2];
+                    const cSX = chunk.size[0], cSY = chunk.size[1], cSZ = chunk.size[2];
+                    const interX0 = Math.max(x0, cX0);
+                    const interZ0 = Math.max(z0, cZ0);
+                    const interX1 = Math.min(x0 + SX, cX0 + cSX);
+                    const interZ1 = Math.min(z0 + SZ, cZ0 + cSZ);
+                    const countX = interX1 - interX0;
+                    const countZ = interZ1 - interZ0;
+                    if (countX <= 0 || countZ <= 0) continue;
+                    // Итерируем по Y-слоям чанка
+                    for (let y = 0; y < cSY; y++) {
+                        // Для каждого Y-слоя итерируем по Z-рядам, которые пересекают наш объем
+                        for (let z = 0; z < countZ; z++) {
+                            const worldZ = interZ0 + z;
+                            const czLocal = worldZ - cZ0;
+                            const vx = interX0 - x0;
+                            const vz = worldZ - z0;
+                            // Исходный адрес в chunk.data (раскладка X,Z,Y) для X-линии
+                            const sourceX = interX0 - cX0;
+                            const srcBase = y * cSX * cSZ + czLocal * cSX + sourceX;
+                            const line = chunk.data.subarray(srcBase, srcBase + countX);
+                            // --- ИСПРАВЛЕНИЕ ---
+                            // Целевой адрес в volume (раскладка X,Y,Z) для той же X-линии.
+                            // Индекс (x,y,z) в раскладке (X,Y,Z) это x + y*Width + z*Width*Height.
+                            const dstBase = vx + y * SX + vz * SX * SY;
+                            // Копируем линию
+                            volume.set(line, dstBase);
+                        }
+                    }
+                }
+                gl.bindTexture(gl.TEXTURE_3D, this.voxelTex);
+                gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, SX, SY, SZ, gl.RED_INTEGER, gl.UNSIGNED_BYTE, volume);
+                gl.bindTexture(gl.TEXTURE_3D, null);
+            }
+            
+            updateChunkRegionInVolume(chunk) {
+                const gl = this.gl;
+                const x0 = this.volumeOrigin[0], z0 = this.volumeOrigin[2];
+                const SX = this.volumeSizeX, SY = this.volumeSizeY, SZ = this.volumeSizeZ;
+                const cX0 = chunk.worldPos[0], cZ0 = chunk.worldPos[2];
+                const cSX = chunk.size[0], cSY = chunk.size[1], cSZ = chunk.size[2];
+                const interX0 = Math.max(x0, cX0);
+                const interZ0 = Math.max(z0, cZ0);
+                const interX1 = Math.min(x0 + SX, cX0 + cSX);
+                const interZ1 = Math.min(z0 + SZ, cZ0 + cSZ);
+                const countX = interX1 - interX0;
+                const countZ = interZ1 - interZ0;
+                if (countX <= 0 || countZ <= 0) return;
+                // Правильно упаковываем данные во временный буфер с раскладкой (X, Y, Z) для WebGL
+                const sub = new Uint8Array(countX * cSY * countZ);
+                // Итерируем Z, затем Y, затем копируем X-ряд для переупорядочивания из (X,Z,Y) в (X,Y,Z)
+                for (let z = 0; z < countZ; z++) {
+                    for (let y = 0; y < cSY; y++) {
+                        const worldZ = interZ0 + z;
+                        const czLocal = worldZ - cZ0;
+                        const sourceX = interX0 - cX0;
+                        // Получаем исходный ряд из данных чанка с раскладкой (X,Z,Y)
+                        const srcBase = y * cSX * cSZ + czLocal * cSX + sourceX;
+                        const line = chunk.data.subarray(srcBase, srcBase + countX);
+                        // Вычисляем целевой индекс в буфере 'sub' с раскладкой (X,Y,Z)
+                        const dstBase = y * countX + z * countX * cSY;
+                        sub.set(line, dstBase);
+                    }
+                }
+                const xOff = interX0 - x0;
+                const zOff = interZ0 - z0;
+                gl.bindTexture(gl.TEXTURE_3D, this.voxelTex);
+                gl.texSubImage3D(gl.TEXTURE_3D, 0, xOff, 0, zOff, countX, cSY, countZ, gl.RED_INTEGER, gl.UNSIGNED_BYTE, sub);
+                gl.bindTexture(gl.TEXTURE_3D, null);
+                this.needsReset = true;
+            }
+
+            updateSingleVoxelInVolume(wx,wy,wz,id){ const x0=this.volumeOrigin[0], z0=this.volumeOrigin[2]; const vx=wx-x0, vy=wy, vz=wz-z0; if (vx<0||vy<0||vz<0||vx>=this.volumeSizeX||vy>=this.volumeSizeY||vz>=this.volumeSizeZ) return; const gl=this.gl; gl.bindTexture(gl.TEXTURE_3D, this.voxelTex); const arr = new Uint8Array([id&255]); gl.texSubImage3D(gl.TEXTURE_3D, 0, vx, vy, vz, 1,1,1, gl.RED_INTEGER, gl.UNSIGNED_BYTE, arr); gl.bindTexture(gl.TEXTURE_3D, null); this.needsReset = true; }
+            
+            render(world, player, sun, sky){
+                const gl=this.gl;
+                this.ensureVolumeForPlayer(player, false);
+
+                const eye = player.getEyePosition();
+                const fwd = player.getForwardVector();
+                const right = player.getRightVector();
+                const up = Vec3.transformQuat(Vec3.create(), [0,1,0], player.rotation);
+                Vec3.normalize(fwd,fwd); Vec3.normalize(right,right); Vec3.normalize(up,up);
+
+                gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+                gl.viewport(0,0,this.ptWidth,this.ptHeight);
+                if (this.needsReset){ gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT); this.sampleCount = 0; this.needsReset=false; }
+
+                gl.useProgram(this.rayTraceProgram);
+                gl.bindVertexArray(this.quadVAO);
+                gl.enable(gl.BLEND);
+                gl.blendFunc(gl.ONE, gl.ONE);
+
+                gl.uniform3fv(this.uRT.cameraPosition, eye); gl.uniform3fv(this.uRT.cameraForward, fwd); gl.uniform3fv(this.uRT.cameraRight, right); gl.uniform3fv(this.uRT.cameraUp, up);
+                gl.uniform1f(this.uRT.aspect, this.ptWidth/this.ptHeight);
+                gl.uniform1i(this.uRT.sampleIndex, this.sampleCount);
+                gl.uniform1f(this.uRT.time, world.time);
+                gl.uniform2f(this.uRT.resolution, this.ptWidth, this.ptHeight);
+                gl.uniform1i(this.uRT.maxBounces, this.settings.maxBounces);
+                gl.uniform1i(this.uRT.useDof, this.settings.useDof?1:0);
+                gl.uniform1f(this.uRT.focusDistance, this.settings.focusDistance);
+                gl.uniform1f(this.uRT.aperture, this.settings.aperture);
+                gl.uniform3fv(this.uRT.volumeOrigin, this.volumeOrigin);
+                gl.uniform3iv(this.uRT.volumeSize, [this.volumeSizeX, this.volumeSizeY, this.volumeSizeZ]);
+                gl.uniform3fv(this.uRT.sunDir, sun.dir);
+                gl.uniform3fv(this.uRT.sunColor, sun.color);
+                gl.uniform3fv(this.uRT.skyColor, sky);
+                
+                gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D, this.voxelTex); gl.uniform1i(this.uRT.voxels, 0);
+                gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.materialLUT); gl.uniform1i(this.uRT.materialLUT, 1);
+                
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                gl.disable(gl.BLEND);
+                gl.bindVertexArray(null);
+
+                gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                gl.viewport(0,0,this.canvas.width,this.canvas.height);
+                gl.useProgram(this.displayProgram);
+                gl.bindVertexArray(this.quadVAO);
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, this.accumTex);
+                gl.uniform1i(this.uDisp.accumulationTexture, 0);
+                gl.uniform1i(this.uDisp.sampleCount, this.sampleCount+1);
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                gl.bindVertexArray(null);
+
+                this.sampleCount++;
+            }
+        }
+
+        // ===========================
+        // Main Game Loop
+        // ===========================
+        function main(){
+            const hud=document.getElementById('hud-info');
+            const breakingIndicator=document.getElementById('breaking-indicator');
+            const canvas=document.getElementById('rtx-canvas');
+            const loader=document.getElementById('loader');
+            const fpsDisplay = document.getElementById('fpsDisplay');
+            const frameCountDisplay = document.getElementById('frameCountDisplay');
+            const qualitySelect = document.getElementById('qualitySelect');
+            const dofToggle = document.getElementById('dofToggle');
+            const focusDistanceSlider = document.getElementById('focusDistance');
+            const focusDistanceValue = document.getElementById('focusDistanceValue');
+            const apertureSlider = document.getElementById('aperture');
+            const apertureValue = document.getElementById('apertureValue');
+            const resSelect = document.getElementById('resSelect');
+            
+            loader.style.display = 'block';
+            
+            const workerBlob=new Blob([document.getElementById('worker-script').textContent], { type:'application/javascript' });
+            const worker=new Worker(URL.createObjectURL(workerBlob));
+            worker.postMessage({ type:'init', payload:{ CONFIG, VoxelRegistryData: VoxelRegistry._data } });
+            
+            const world=new World(worker);
+            const player=new Player(world);
+            const input=new InputHandler(canvas, player);
+            const renderer=new RTXRenderer(canvas, world);
+
+            let lastPlayerPos = new Float32Array(player.position);
+            let lastPlayerRot = new Float32Array(player.rotation);
+            
+            function updateQuality(){ switch(qualitySelect.value){ case 'low': renderer.settings.maxBounces=3; break; case 'medium': renderer.settings.maxBounces=5; break; case 'high': renderer.settings.maxBounces=8; break; case 'ultra': renderer.settings.maxBounces=12; break; } renderer.needsReset=true; }
+            qualitySelect.addEventListener('change', updateQuality);
+            dofToggle.addEventListener('change', e=>{ renderer.settings.useDof=e.target.checked; renderer.needsReset=true; });
+            focusDistanceSlider.addEventListener('input', e=>{ renderer.settings.focusDistance=parseFloat(e.target.value); focusDistanceValue.textContent=renderer.settings.focusDistance.toFixed(1); renderer.needsReset=true; });
+            apertureSlider.addEventListener('input', e=>{ renderer.settings.aperture=parseFloat(e.target.value); apertureValue.textContent=renderer.settings.aperture.toFixed(3); if (renderer.settings.aperture>0) {renderer.settings.useDof=true; dofToggle.checked=true;} renderer.needsReset=true; });
+            resSelect.addEventListener('change', e=>{ renderer.settings.resolutionScale=parseFloat(e.target.value); renderer.resize(); });
+            
+            updateQuality(); 
+            dofToggle.checked=renderer.settings.useDof; 
+            focusDistanceValue.textContent=renderer.settings.focusDistance.toFixed(1); 
+            apertureValue.textContent=renderer.settings.aperture.toFixed(3);
+            
+            let lastTime=0; let frameCounter=0, fpsTime=0;
+            let breakingState={ pos:null, progress:0 };
+            
+            function gameLoop(timeMS){
+                const dt=Math.min(0.05, (timeMS-lastTime)/1000 || 1/60);
+                lastTime=timeMS;
+                
+                world.update(dt);
+                player.update(dt, input);
+
+                if (!Vec3.equals(player.position, lastPlayerPos) || !Quat.equals(player.rotation, lastPlayerRot)) {
+                    renderer.needsReset = true;
+                }
+                lastPlayerPos.set(player.position);
+                lastPlayerRot.set(player.rotation);
+
+                const time=world.time; const sunAngle=(time/CONFIG.DAY_CYCLE_DURATION)*2*Math.PI - Math.PI/2; const sunDir=[Math.cos(sunAngle), Math.sin(sunAngle), 0.3]; Vec3.normalize(sunDir,sunDir); const sunY=sunDir[1]; const dayFactor = Math.max(0, sunY); const nightSky=[0.01,0.02,0.05], daySky=[0.5,0.7,1.0], twilight1=[0.05,0.05,0.1], twilight2=[0.8,0.3,0.2]; const sky = [ daySky[0]*dayFactor + nightSky[0]*(1-dayFactor), daySky[1]*dayFactor + nightSky[1]*(1-dayFactor), daySky[2]*dayFactor + nightSky[2]*(1-dayFactor), ]; const t=Math.pow(1-Math.abs(sunY),4); sky[0]+= (sunY>0?twilight1[0]:twilight2[0])*t; sky[1]+= (sunY>0?twilight1[1]:twilight2[1])*t; sky[2]+= (sunY>0?twilight1[2]:twilight2[2])*t; const sunColor=[Math.max(0,dayFactor*1.0), Math.max(0,dayFactor*0.95), Math.max(0,dayFactor*0.85)];
+                
+                const hit=raycast(world, player.getEyePosition(), player.getForwardVector(), 6.0);
+                if (input.lmb && hit){ const block=VoxelRegistry.get(hit.id); if (!block.unbreakable){ const eff=getToolEffectiveness(player.getSelectedItem(), block); if (breakingState.pos && Vec3.equals(breakingState.pos, hit.position)){ breakingState.progress+=dt*eff; } else { breakingState={ pos:hit.position, progress:dt*eff, totalTime:block.breakTime }; } if (breakingState.progress>=breakingState.totalTime){ world.setVoxel(...hit.position, Aetheria); breakingState={ pos:null, progress:0 }; } } } else { breakingState={ pos:null, progress:0 }; }
+                const selectedItem=player.getSelectedItem(); if (input.rmbDown && hit && selectedItem.isBlock){ const placePos=[hit.position[0]+hit.face[0], hit.position[1]+hit.face[1], hit.position[2]+hit.face[2]]; const bb=player.getAABB(); if (!(bb.max[0]>placePos[0] && bb.min[0]<placePos[0]+1 && bb.max[1]>placePos[1] && bb.min[1]<placePos[1]+1 && bb.max[2]>placePos[2] && bb.min[2]<placePos[2]+1)){ world.setVoxel(...placePos, selectedItem.id); } }
+                
+                renderer.render(world, player, {dir:sunDir, color:sunColor}, sky);
+                
+                if (breakingState.pos){ const p = breakingState.totalTime > 0 ? breakingState.progress / breakingState.totalTime : 1.0; breakingIndicator.style.opacity='0.7'; breakingIndicator.style.transform=`translate(-50%, -50%) scale(${0.5 + p*0.5})`; breakingIndicator.style.clipPath=`inset(0% ${(1-p)*50}% 0% ${(1-p)*50}% round 50%)`; } else { breakingIndicator.style.opacity='0'; breakingIndicator.style.transform='translate(-50%, -50%) scale(0)'; }
+                
+                frameCounter++; fpsTime += dt; if (fpsTime >= 1.0){ fpsDisplay.textContent = frameCounter; fpsTime -= 1.0; frameCounter = 0; }
+                frameCountDisplay.textContent = renderer.sampleCount;
+                hud.textContent = `Pos: ${player.position.map(p=>p.toFixed(1)).join(', ')} | Chunks: ${world.chunks.size}\n` + `Health: ${player.health}/${player.maxHealth} | Selected: ${selectedItem?selectedItem.name:'?'}`;
+                input.resetDeltas();
+                requestAnimationFrame(gameLoop);
+            }
+            
+            (async () => {
+                console.log("Начинается первоначальное построение воксельного объёма...");
+                renderer.ensureVolumeForPlayer(player, true);
+                console.log("Воксельный объём готов к рендерингу.");
+                loader.style.display = 'none';
+                requestAnimationFrame(gameLoop);
+            })();
+        }
+        main();
+    </script>
+</body>
+</html>
